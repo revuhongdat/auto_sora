@@ -1,5 +1,30 @@
-/dist/
-/build/
-/venv/
-/chrome-automation/
-/.vscode/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Build
+build/
+dist/
+*.spec
+
+# VSCode
+.vscode/
+
+# PyInstaller
+*.exe
+
+# Chrome profile
+chrome-automation/
+
+# History
+history/
