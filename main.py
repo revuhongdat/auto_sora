@@ -448,7 +448,27 @@ class SoraAutomation:
         try:
             import pandas as pd
             df = pd.read_excel(excel_path)
-            pending_images = df[df[self.excel_cols["status"]].isna() | (df[self.excel_cols["status"]] == '')].to_dict('records')
+            # Lấy những ảnh có trạng thái khác "Completed"
+            pending_images = df[
+                df[self.excel_cols["status"]].isna() |
+                (df[self.excel_cols["status"]] == '') |
+                (df[self.excel_cols["status"]] != 'Completed')
+            ].to_dict('records')
+
+            # Thống kê trạng thái
+            total_images = len(df)
+            completed_images = len(df[df[self.excel_cols["status"]] == 'Completed'])
+            pending_count = len(pending_images)
+
+            self._log(f"Tổng số ảnh: {total_images}")
+            self._log(f"Đã hoàn thành: {completed_images}")
+            self._log(f"Cần xử lý: {pending_count}")
+
+            if not pending_images:
+                self._log("Tất cả ảnh đã được xử lý hoàn thành!")
+                return True, "Tất cả ảnh đã được xử lý hoàn thành"
+
+            self._log(f"Bắt đầu xử lý {pending_count} ảnh chưa hoàn thành...")
 
             wait = WebDriverWait(self.driver, 20)
 
@@ -458,108 +478,113 @@ class SoraAutomation:
                     return False, "Đã dừng xử lý"
 
                 try:
+                    # Hiển thị thông tin ảnh và trạng thái hiện tại
+                    image_name = image[self.excel_cols['name']]
+                    current_status = image.get(self.excel_cols["status"], "")
+                    self._log(f"[{image_name}] Bắt đầu xử lý ({idx+1}/{pending_count}) - Trạng thái hiện tại: '{current_status}'")
+
                     # 1. Tìm và click add_button
-                    self._log(f"[Ảnh {idx+1}] Đang tìm add button...")
+                    self._log(f"[{image_name}] Đang tìm add button...")
                     add_button, add_button_xpath = self._find_add_button_with_fallback(wait)
 
                     if not add_button:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy add button với bất kỳ selector nào. Bỏ qua ảnh này.")
+                        self._log(f"[{image_name}] Không tìm thấy add button với bất kỳ selector nào. Bỏ qua ảnh này.")
                         continue
 
-                    self._log(f"[Ảnh {idx+1}] Đã tìm thấy add button với selector: {add_button_xpath}")
+                    self._log(f"[{image_name}] Đã tìm thấy add button với selector: {add_button_xpath}")
                     click_success, click_message = self._safe_click(add_button, "add button")
 
                     if not click_success:
-                        self._log(f"[Ảnh {idx+1}] {click_message}")
+                        self._log(f"[{image_name}] {click_message}")
                         continue
 
-                    self._log(f"[Ảnh {idx+1}] {click_message}")
+                    self._log(f"[{image_name}] {click_message}")
                     time.sleep(self.delays.get("after_click", 1))
 
                     # 2. Tìm upload input và upload ảnh (KHÔNG click upload_button)
                     upload_input_xpath = "//input[@accept='image/jpeg,image/png,image/webp']"
-                    self._log(f"[Ảnh {idx+1}] Đang tìm upload input với selector: {upload_input_xpath}")
+                    self._log(f"[{image_name}] Đang tìm upload input với selector: {upload_input_xpath}")
                     try:
                         file_input = wait.until(EC.presence_of_element_located((By.XPATH, upload_input_xpath)))
-                        self._log(f"[Ảnh {idx+1}] Đã tìm thấy upload input.")
+                        self._log(f"[{image_name}] Đã tìm thấy upload input.")
                         # Nếu input bị ẩn, thử hiện nó lên
                         self.driver.execute_script("arguments[0].style.display = 'block';", file_input)
                     except Exception as e:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy upload input với selector: {upload_input_xpath}. Lỗi: {e}")
+                        self._log(f"[{image_name}] Không tìm thấy upload input với selector: {upload_input_xpath}. Lỗi: {e}")
                         continue
 
-                    self._log(f"[Ảnh {idx+1}] Đang upload ảnh: {image[self.excel_cols['path']]}")
+                    self._log(f"[{image_name}] Đang upload ảnh: {image[self.excel_cols['path']]}")
                     file_input.send_keys(image[self.excel_cols['path']])
                     time.sleep(self.delays.get("after_upload", 2))
 
                     # 4. Nhập prompt cho ảnh ngay sau khi upload
-                    self._log(f"[Ảnh {idx+1}] Đang tìm prompt input...")
+                    self._log(f"[{image_name}] Đang tìm prompt input...")
                     prompt_input, prompt_input_xpath = self._find_prompt_input_with_fallback(wait)
 
                     if prompt_input:
-                        self._log(f"[Ảnh {idx+1}] Đã tìm thấy prompt input với selector: {prompt_input_xpath}")
+                        self._log(f"[{image_name}] Đã tìm thấy prompt input với selector: {prompt_input_xpath}")
                         try:
                             prompt_input.clear()
                             prompt_input.send_keys(image[self.excel_cols["prompt"]])
                             time.sleep(self.delays.get("after_prompt", 1))
-                            self._log(f"[Ảnh {idx+1}] Đã nhập prompt: {image[self.excel_cols['prompt']]}")
+                            self._log(f"[{image_name}] Đã nhập prompt: {image[self.excel_cols['prompt']]}")
                         except Exception as e:
-                            self._log(f"[Ảnh {idx+1}] Lỗi khi nhập prompt: {e}")
+                            self._log(f"[{image_name}] Lỗi khi nhập prompt: {e}")
                     else:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy prompt input với bất kỳ selector nào.")
+                        self._log(f"[{image_name}] Không tìm thấy prompt input với bất kỳ selector nào.")
 
                     # 5. Chờ trước khi remix
-                    self._log(f"[Ảnh {idx+1}] Đang chờ {self.delays.get('before_remix', 5)} giây trước khi Remix...")
+                    self._log(f"[{image_name}] Đang chờ {self.delays.get('before_remix', 5)} giây trước khi Remix...")
                     time.sleep(self.delays.get("before_remix", 5))
 
                     # 6. Tìm remix button và click
-                    self._log(f"[Ảnh {idx+1}] Đang tìm remix button...")
-                    self._log(f"[Ảnh {idx+1}] Trạng thái trang: {self._check_page_state()}")
+                    self._log(f"[{image_name}] Đang tìm remix button...")
+                    self._log(f"[{image_name}] Trạng thái trang: {self._check_page_state()}")
 
                     remix_button, remix_button_xpath = self._find_remix_button_with_fallback(wait)
 
                     if not remix_button:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy remix button với bất kỳ selector nào. Bỏ qua ảnh này.")
+                        self._log(f"[{image_name}] Không tìm thấy remix button với bất kỳ selector nào. Bỏ qua ảnh này.")
                         continue
 
-                    self._log(f"[Ảnh {idx+1}] Đã tìm thấy remix button với selector: {remix_button_xpath}")
+                    self._log(f"[{image_name}] Đã tìm thấy remix button với selector: {remix_button_xpath}")
                     self.driver.execute_script("arguments[0].click();", remix_button)
-                    self._log(f"[Ảnh {idx+1}] Đã click nút Remix với ảnh và prompt.")
+                    self._log(f"[{image_name}] Đã click nút Remix với ảnh và prompt.")
 
                     # 7. Chờ cố định sau khi bấm Remix (3 phút), sau đó tiếp tục ảnh tiếp theo
                     after_remix_delay = self.delays.get("after_remix", 180)
-                    self._log(f"[Ảnh {idx+1}] Đang chờ {after_remix_delay} giây sau Remix, sau đó sẽ tiếp tục ảnh tiếp theo...")
+                    self._log(f"[{image_name}] Đang chờ {after_remix_delay} giây sau Remix, sau đó sẽ tiếp tục ảnh tiếp theo...")
                     time.sleep(after_remix_delay)
 
                     # 8. Hoàn thành ảnh hiện tại
-                    self._log(f"[Ảnh {idx+1}] Hoàn thành xử lý ảnh. Sẽ chuyển sang ảnh tiếp theo.")
+                    self._log(f"[{image_name}] Hoàn thành xử lý ảnh. Sẽ chuyển sang ảnh tiếp theo.")
 
                     # Đánh dấu ảnh đã hoàn thành
                     df.loc[df[self.excel_cols["path"]] == image[self.excel_cols["path"]], self.excel_cols["status"]] = 'Completed'
                     save_success, save_message = self._safe_excel_save(df, excel_path)
 
                     if save_success:
-                        self._log(f"[Ảnh {idx+1}] Xử lý thành công ảnh: {image[self.excel_cols['name']]}")
+                        self._log(f"[{image_name}] Xử lý thành công!")
                     else:
-                        self._log(f"[Ảnh {idx+1}] Xử lý thành công ảnh nhưng không thể lưu Excel: {save_message}")
+                        self._log(f"[{image_name}] Xử lý thành công nhưng không thể lưu Excel: {save_message}")
 
                     # Hoàn thành ảnh hiện tại, chuyển sang ảnh tiếp theo luôn
                     remaining_images = len(pending_images) - idx - 1
                     if remaining_images > 0:
-                        self._log(f"[Ảnh {idx+1}] Hoàn thành! Còn {remaining_images} ảnh chưa xử lý. Bắt đầu ảnh tiếp theo...")
+                        self._log(f"[{image_name}] Hoàn thành! Còn {remaining_images} ảnh chưa xử lý. Bắt đầu ảnh tiếp theo...")
                     else:
-                        self._log(f"[Ảnh {idx+1}] Đây là ảnh cuối cùng. Hoàn thành tất cả!")
+                        self._log(f"[{image_name}] Đây là ảnh cuối cùng. Hoàn thành tất cả!")
 
                 except Exception as e:
-                    self._log(f"[Ảnh {idx+1}] Lỗi khi xử lý ảnh {image[self.excel_cols['name']]}: {str(e)}")
-                    self._log(f"[Ảnh {idx+1}] Trạng thái trang khi lỗi: {self._check_page_state()}")
+                    self._log(f"[{image_name}] Lỗi khi xử lý: {str(e)}")
+                    self._log(f"[{image_name}] Trạng thái trang khi lỗi: {self._check_page_state()}")
 
                     # Đánh dấu ảnh bị lỗi
                     df.loc[df[self.excel_cols["path"]] == image[self.excel_cols["path"]], self.excel_cols["status"]] = f'Error: {str(e)[:50]}'
                     save_success, save_message = self._safe_excel_save(df, excel_path)
 
                     if not save_success:
-                        self._log(f"[Ảnh {idx+1}] Không thể lưu trạng thái lỗi vào Excel: {save_message}")
+                        self._log(f"[{image_name}] Không thể lưu trạng thái lỗi vào Excel: {save_message}")
 
                     continue
             return True, "Đã xử lý xong tất cả ảnh"
