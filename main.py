@@ -1,12 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
-import socket
 import threading
 import time
-import subprocess
-import platform
-import json
-from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -18,24 +13,55 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, NoSuchElementException
 
 # ===================== HẰNG SỐ CẤU HÌNH =====================
 CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 CHROMEDRIVER_PATH = r"C:\\Users\\Admin\\Desktop\\auto sora\\137\\chromedriver-win64\\chromedriver.exe"
-SORA_URL = "https://sora.com"
+SORA_URL = "https://sora.chatgpt.com/library"
 SELECTORS = {
     "add_button": "//button[.//span[text()='Attach media']]",
+    "add_button_alternatives": [
+        "//button[contains(@aria-label, 'Attach')]",
+        "//button[contains(@title, 'Attach')]",
+        "//button[.//svg[contains(@class, 'paperclip')]]",
+        "//button[@data-testid='attach-button']"
+    ],
     "upload_button": "//div[normalize-space()='Upload from device']",
     "prompt_input": "(//textarea[@placeholder='Describe a new image...'])[1]",
+    "prompt_input_alternatives": [
+        "//textarea[contains(@placeholder, 'Describe')]",
+        "//textarea[contains(@placeholder, 'image')]",
+        "//input[contains(@placeholder, 'Describe')]",
+        "//div[contains(@contenteditable, 'true')]"
+    ],
     "remix_button": "(//button[normalize-space()='Remix'])[1]",
-    "upload_input": "//input[@type='file']"
+    "remix_button_alternatives": [
+        "//button[contains(text(), 'Remix')]",
+        "//button[contains(@class, 'remix')]",
+        "//button[@data-testid='remix-button']",
+        "//button[.//span[contains(text(), 'Remix')]]"
+    ],
+    "upload_input": "//input[@type='file']",
+    # Selectors để kiểm tra trạng thái generation
+    "generation_list": "//div[@role='dialog']//a[contains(@href, '/t/') or contains(@href, '/g/')]",
+    "loading_spinner": ".//svg[contains(@class, 'h-6 w-6')]//circle[@stroke-dasharray]",
+    "generation_thumbnail": ".//img[@alt='Sora generation']",
+    "generation_cancelled": ".//svg[contains(@class, 'lucide-ban')]",
+    "generation_progress": ".//div[contains(text(), '%')]",
+    # Selectors mới cho preview area
+    "preview_area": "//div[contains(@style, 'aspect-ratio')]",
+    "preview_loading": "//div[contains(@style, 'aspect-ratio')]//svg[@viewBox='0 0 120 120']",
+    "preview_progress": "//div[contains(@style, 'aspect-ratio')]//div[contains(text(), '%')]",
+    "preview_completed": "//div[contains(@style, 'aspect-ratio')]//img",
+    "main_generation_area": "//div[contains(@class, 'bg-token-bg-secondary')]//svg[@width='120'][@height='120']",
+    "main_progress_text": "//div[contains(@class, 'absolute')]//div[contains(text(), '%')]"
 }
 DELAYS = {
     "after_click": 2.0,
-    "after_upload": 2.0,
-    "after_prompt": 2.0,
-    "before_remix": 30.0
+    "after_upload": 10.0,
+    "after_prompt": 1.0,
+    "before_remix": 1.0,
+    "after_remix": 180.0  # 3 phút chờ sau remix, sau đó tiếp tục ảnh tiếp theo luôn
 }
 IMAGE_FOLDER = r"C:/Users/Admin/Desktop/auto sora/test"
 PROMPT = "vẽ lại theo phong cách anime, giữ nguyên khuôn mặt nhân vật, thay đổi backgound cho hợp lý"
@@ -136,6 +162,265 @@ class SoraAutomation:
         else:
             print(f"[{time.strftime('%H:%M:%S')}] {message}")
 
+    def _check_page_state(self):
+        """Kiểm tra trạng thái trang hiện tại để debug"""
+        try:
+            current_url = self.driver.current_url
+            page_title = self.driver.title
+            return f"URL: {current_url}, Title: {page_title}"
+        except Exception as e:
+            return f"Không thể lấy thông tin trang: {e}"
+
+    def _find_add_button_with_fallback(self, wait):
+        """Tìm nút Add/Attach với các selector backup"""
+        # Thử selector chính
+        add_button_xpath = self.selectors["add_button"]
+        try:
+            add_button = wait.until(EC.element_to_be_clickable((By.XPATH, add_button_xpath)))
+            return add_button, add_button_xpath
+        except Exception:
+            pass
+
+        # Thử các selector backup
+        for alt_selector in self.selectors.get("add_button_alternatives", []):
+            try:
+                add_button = wait.until(EC.element_to_be_clickable((By.XPATH, alt_selector)))
+                return add_button, alt_selector
+            except Exception:
+                continue
+
+        return None, None
+
+    def _find_prompt_input_with_fallback(self, wait):
+        """Tìm prompt input với các selector backup"""
+        # Thử selector chính
+        prompt_input_xpath = self.selectors["prompt_input"]
+        try:
+            prompt_input = wait.until(EC.visibility_of_element_located((By.XPATH, prompt_input_xpath)))
+            return prompt_input, prompt_input_xpath
+        except Exception:
+            pass
+
+        # Thử các selector backup
+        for alt_selector in self.selectors.get("prompt_input_alternatives", []):
+            try:
+                prompt_input = wait.until(EC.visibility_of_element_located((By.XPATH, alt_selector)))
+                return prompt_input, alt_selector
+            except Exception:
+                continue
+
+        return None, None
+
+    def _find_remix_button_with_fallback(self, wait):
+        """Tìm nút Remix với các selector backup"""
+        remix_button = None
+        used_selector = None
+
+        # Thử selector chính
+        remix_button_xpath = self.selectors["remix_button"]
+        try:
+            remix_button = wait.until(EC.element_to_be_clickable((By.XPATH, remix_button_xpath)))
+            used_selector = remix_button_xpath
+            return remix_button, used_selector
+        except Exception:
+            pass
+
+        # Thử các selector backup
+        for alt_selector in self.selectors.get("remix_button_alternatives", []):
+            try:
+                remix_button = wait.until(EC.element_to_be_clickable((By.XPATH, alt_selector)))
+                used_selector = alt_selector
+                return remix_button, used_selector
+            except Exception:
+                continue
+
+        return None, None
+
+    def _safe_click(self, element, element_name="element"):
+        """Click element một cách an toàn, thử nhiều phương pháp"""
+        try:
+            # Phương pháp 1: Click bình thường
+            element.click()
+            return True, "Click thành công"
+        except Exception as e1:
+            try:
+                # Phương pháp 2: Scroll đến element rồi click
+                self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
+                time.sleep(0.5)
+                element.click()
+                return True, "Click thành công sau scroll"
+            except Exception as e2:
+                try:
+                    # Phương pháp 3: JavaScript click
+                    self.driver.execute_script("arguments[0].click();", element)
+                    return True, "Click thành công bằng JavaScript"
+                except Exception as e3:
+                    return False, f"Không thể click {element_name}: {e1}, {e2}, {e3}"
+
+    def _safe_excel_save(self, df, excel_path, max_retries=3):
+        """Lưu Excel file một cách an toàn với retry"""
+        for attempt in range(max_retries):
+            try:
+                df.to_excel(excel_path, index=False)
+                return True, "Lưu Excel thành công"
+            except PermissionError:
+                if attempt < max_retries - 1:
+                    self._log(f"File Excel đang được sử dụng, thử lại sau 2 giây... (lần {attempt + 1})")
+                    time.sleep(2)
+                else:
+                    return False, "Không thể lưu Excel - file đang được mở bởi chương trình khác"
+            except Exception as e:
+                return False, f"Lỗi khi lưu Excel: {e}"
+
+        return False, "Đã thử tối đa số lần cho phép"
+
+    def _check_generation_status(self):
+        """Kiểm tra trạng thái generation của ảnh mới nhất"""
+        try:
+            # Phương pháp 1: Kiểm tra preview area chính (nơi hiển thị progress)
+            preview_areas = self.driver.find_elements(By.XPATH, self.selectors["preview_area"])
+            if preview_areas:
+                for preview in preview_areas:
+                    # Kiểm tra loading spinner trong preview
+                    loading_spinners = preview.find_elements(By.XPATH, ".//svg[@viewBox='0 0 120 120']")
+                    if loading_spinners:
+                        # Tìm progress text
+                        progress_elements = preview.find_elements(By.XPATH, ".//div[contains(text(), '%')]")
+                        if progress_elements:
+                            progress_text = progress_elements[0].text
+                            return "generating", f"Đang generate: {progress_text}"
+                        return "generating", "Đang generate..."
+
+                    # Kiểm tra xem có ảnh hoàn thành không
+                    completed_images = preview.find_elements(By.XPATH, ".//img")
+                    if completed_images:
+                        return "completed", "Generation đã hoàn thành"
+
+            # Phương pháp 2: Kiểm tra main generation area
+            main_spinners = self.driver.find_elements(By.XPATH, self.selectors["main_generation_area"])
+            if main_spinners:
+                # Tìm progress text
+                progress_elements = self.driver.find_elements(By.XPATH, self.selectors["main_progress_text"])
+                if progress_elements:
+                    progress_text = progress_elements[0].text
+                    return "generating", f"Đang generate: {progress_text}"
+                return "generating", "Đang generate..."
+
+            # Phương pháp 3: Kiểm tra danh sách generation (fallback)
+            generation_items = self.driver.find_elements(By.XPATH, self.selectors["generation_list"])
+
+            if generation_items:
+                # Kiểm tra item đầu tiên (mới nhất)
+                latest_item = generation_items[0]
+
+                # Kiểm tra xem có loading spinner không
+                loading_spinners = latest_item.find_elements(By.XPATH, self.selectors["loading_spinner"])
+                if loading_spinners:
+                    # Tìm progress text
+                    progress_elements = latest_item.find_elements(By.XPATH, self.selectors["generation_progress"])
+                    if progress_elements:
+                        progress_text = progress_elements[0].text
+                        return "generating", f"Đang generate: {progress_text}"
+                    return "generating", "Đang generate..."
+
+                # Kiểm tra xem có bị cancelled không
+                cancelled_icons = latest_item.find_elements(By.XPATH, self.selectors["generation_cancelled"])
+                if cancelled_icons:
+                    return "cancelled", "Generation bị hủy"
+
+                # Kiểm tra xem có thumbnail không (đã hoàn thành)
+                thumbnails = latest_item.find_elements(By.XPATH, self.selectors["generation_thumbnail"])
+                if thumbnails:
+                    return "completed", "Generation đã hoàn thành"
+
+            return "no_generations", "Không tìm thấy generation nào"
+
+        except Exception as e:
+            return "error", f"Lỗi khi kiểm tra trạng thái: {e}"
+
+    def _wait_for_generation_complete(self, image_idx, timeout=1800):  # 30 phút timeout
+        """Chờ cho generation hoàn thành"""
+        self._log(f"[Ảnh {image_idx}] Bắt đầu chờ generation hoàn thành...")
+
+        start_time = time.time()
+        check_interval = 15  # Kiểm tra mỗi 15 giây
+        last_status = None
+
+        while time.time() - start_time < timeout:
+            if not self.is_running:
+                self._log(f"[Ảnh {image_idx}] Đã dừng xử lý trong khi chờ generation.")
+                return False, "Đã dừng xử lý"
+
+            # Kiểm tra cả generation status và preview area
+            status, message = self._check_generation_status()
+            preview_status, preview_message = self._check_preview_area_status()
+
+            # Ưu tiên preview status nếu có thông tin
+            if preview_status in ["generating", "completed"]:
+                status, message = preview_status, preview_message
+
+            # Chỉ log khi status thay đổi
+            if status != last_status:
+                elapsed = int(time.time() - start_time)
+                self._log(f"[Ảnh {image_idx}] Trạng thái generation: {message} (đã chờ {elapsed}s)")
+                if preview_status != "no_preview":
+                    self._log(f"[Ảnh {image_idx}] Preview status: {preview_message}")
+                last_status = status
+
+            if status == "completed":
+                self._log(f"[Ảnh {image_idx}] Generation đã hoàn thành!")
+                return True, "Generation hoàn thành"
+            elif status == "cancelled":
+                self._log(f"[Ảnh {image_idx}] Generation bị hủy!")
+                return False, "Generation bị hủy"
+            elif status == "error":
+                self._log(f"[Ảnh {image_idx}] Lỗi khi kiểm tra generation: {message}")
+                # Tiếp tục thử lại
+
+            time.sleep(check_interval)
+
+        # Timeout
+        elapsed = int(time.time() - start_time)
+        self._log(f"[Ảnh {image_idx}] Timeout sau {elapsed}s khi chờ generation.")
+        return False, f"Timeout sau {elapsed}s"
+
+    def _check_preview_area_status(self):
+        """Kiểm tra trạng thái preview area cụ thể"""
+        try:
+            # Tìm tất cả preview areas
+            preview_selectors = [
+                "//div[contains(@style, 'aspect-ratio: 720 / 480')]",
+                "//div[contains(@style, 'aspect-ratio')]",
+                "//a[contains(@class, 'group/tile')]//div[contains(@class, 'bg-token-bg-secondary')]"
+            ]
+
+            for selector in preview_selectors:
+                previews = self.driver.find_elements(By.XPATH, selector)
+                for preview in previews:
+                    # Kiểm tra loading spinner
+                    spinners = preview.find_elements(By.XPATH, ".//svg[@width='120'][@height='120']")
+                    if spinners:
+                        # Tìm progress text
+                        progress_divs = preview.find_elements(By.XPATH, ".//div[contains(@class, 'absolute')]//div[contains(text(), '%')]")
+                        if progress_divs:
+                            progress = progress_divs[0].text.strip()
+                            return "generating", f"Preview đang generate: {progress}"
+
+                        # Kiểm tra circle progress
+                        circles = preview.find_elements(By.XPATH, ".//circle[@stroke-dasharray]")
+                        if circles:
+                            return "generating", "Preview đang generate (có circle progress)"
+
+                    # Kiểm tra ảnh hoàn thành
+                    images = preview.find_elements(By.XPATH, ".//img")
+                    if images:
+                        return "completed", "Preview đã có ảnh hoàn thành"
+
+            return "no_preview", "Không tìm thấy preview area"
+
+        except Exception as e:
+            return "error", f"Lỗi khi kiểm tra preview: {e}"
+
     def create_excel_from_folder(self, folder_path, excel_path, prompt_text):
         if os.path.exists(excel_path):
             return False, "File excel đã tồn tại"
@@ -171,19 +456,25 @@ class SoraAutomation:
                 if not self.is_running:
                     self._log("Đã dừng xử lý")
                     return False, "Đã dừng xử lý"
+
                 try:
                     # 1. Tìm và click add_button
-                    add_button_xpath = self.selectors.get("add_button")
-                    if add_button_xpath:
-                        self._log(f"[Ảnh {idx+1}] Đang tìm add button với selector: {add_button_xpath}")
-                        try:
-                            add_button = wait.until(EC.element_to_be_clickable((By.XPATH, add_button_xpath)))
-                            self._log(f"[Ảnh {idx+1}] Đã tìm thấy add button, đang click...")
-                            add_button.click()
-                            time.sleep(self.delays.get("after_click", 1))
-                        except Exception as e:
-                            self._log(f"[Ảnh {idx+1}] Không tìm thấy hoặc không click được add button với selector: {add_button_xpath}. Lỗi: {e}")
-                            continue
+                    self._log(f"[Ảnh {idx+1}] Đang tìm add button...")
+                    add_button, add_button_xpath = self._find_add_button_with_fallback(wait)
+
+                    if not add_button:
+                        self._log(f"[Ảnh {idx+1}] Không tìm thấy add button với bất kỳ selector nào. Bỏ qua ảnh này.")
+                        continue
+
+                    self._log(f"[Ảnh {idx+1}] Đã tìm thấy add button với selector: {add_button_xpath}")
+                    click_success, click_message = self._safe_click(add_button, "add button")
+
+                    if not click_success:
+                        self._log(f"[Ảnh {idx+1}] {click_message}")
+                        continue
+
+                    self._log(f"[Ảnh {idx+1}] {click_message}")
+                    time.sleep(self.delays.get("after_click", 1))
 
                     # 2. Tìm upload input và upload ảnh (KHÔNG click upload_button)
                     upload_input_xpath = "//input[@accept='image/jpeg,image/png,image/webp']"
@@ -201,45 +492,75 @@ class SoraAutomation:
                     file_input.send_keys(image[self.excel_cols['path']])
                     time.sleep(self.delays.get("after_upload", 2))
 
-                    # 4. Tìm prompt input và nhập prompt
-                    prompt_input_xpath = self.selectors["prompt_input"]
-                    self._log(f"[Ảnh {idx+1}] Đang tìm prompt input với selector: {prompt_input_xpath}")
-                    try:
-                        prompt_input = wait.until(EC.visibility_of_element_located((By.XPATH, prompt_input_xpath)))
-                        self._log(f"[Ảnh {idx+1}] Đã tìm thấy prompt input.")
-                    except Exception as e:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy prompt input với selector: {prompt_input_xpath}. Lỗi: {e}")
-                        continue
+                    # 4. Nhập prompt cho ảnh ngay sau khi upload
+                    self._log(f"[Ảnh {idx+1}] Đang tìm prompt input...")
+                    prompt_input, prompt_input_xpath = self._find_prompt_input_with_fallback(wait)
 
-                    prompt_input.clear()
-                    prompt_input.send_keys(image[self.excel_cols["prompt"]])
-                    time.sleep(self.delays.get("after_prompt", 1))
+                    if prompt_input:
+                        self._log(f"[Ảnh {idx+1}] Đã tìm thấy prompt input với selector: {prompt_input_xpath}")
+                        try:
+                            prompt_input.clear()
+                            prompt_input.send_keys(image[self.excel_cols["prompt"]])
+                            time.sleep(self.delays.get("after_prompt", 1))
+                            self._log(f"[Ảnh {idx+1}] Đã nhập prompt: {image[self.excel_cols['prompt']]}")
+                        except Exception as e:
+                            self._log(f"[Ảnh {idx+1}] Lỗi khi nhập prompt: {e}")
+                    else:
+                        self._log(f"[Ảnh {idx+1}] Không tìm thấy prompt input với bất kỳ selector nào.")
 
                     # 5. Chờ trước khi remix
                     self._log(f"[Ảnh {idx+1}] Đang chờ {self.delays.get('before_remix', 5)} giây trước khi Remix...")
                     time.sleep(self.delays.get("before_remix", 5))
 
                     # 6. Tìm remix button và click
-                    remix_button_xpath = self.selectors["remix_button"]
-                    self._log(f"[Ảnh {idx+1}] Đang tìm remix button với selector: {remix_button_xpath}")
-                    try:
-                        remix_button = wait.until(EC.element_to_be_clickable((By.XPATH, remix_button_xpath)))
-                        self._log(f"[Ảnh {idx+1}] Đã tìm thấy remix button.")
-                    except Exception as e:
-                        self._log(f"[Ảnh {idx+1}] Không tìm thấy remix button với selector: {remix_button_xpath}. Lỗi: {e}")
+                    self._log(f"[Ảnh {idx+1}] Đang tìm remix button...")
+                    self._log(f"[Ảnh {idx+1}] Trạng thái trang: {self._check_page_state()}")
+
+                    remix_button, remix_button_xpath = self._find_remix_button_with_fallback(wait)
+
+                    if not remix_button:
+                        self._log(f"[Ảnh {idx+1}] Không tìm thấy remix button với bất kỳ selector nào. Bỏ qua ảnh này.")
                         continue
 
+                    self._log(f"[Ảnh {idx+1}] Đã tìm thấy remix button với selector: {remix_button_xpath}")
                     self.driver.execute_script("arguments[0].click();", remix_button)
+                    self._log(f"[Ảnh {idx+1}] Đã click nút Remix với ảnh và prompt.")
 
+                    # 7. Chờ cố định sau khi bấm Remix (3 phút), sau đó tiếp tục ảnh tiếp theo
+                    after_remix_delay = self.delays.get("after_remix", 180)
+                    self._log(f"[Ảnh {idx+1}] Đang chờ {after_remix_delay} giây sau Remix, sau đó sẽ tiếp tục ảnh tiếp theo...")
+                    time.sleep(after_remix_delay)
+
+                    # 8. Hoàn thành ảnh hiện tại
+                    self._log(f"[Ảnh {idx+1}] Hoàn thành xử lý ảnh. Sẽ chuyển sang ảnh tiếp theo.")
+
+                    # Đánh dấu ảnh đã hoàn thành
                     df.loc[df[self.excel_cols["path"]] == image[self.excel_cols["path"]], self.excel_cols["status"]] = 'Completed'
-                    df.to_excel(excel_path, index=False)
-                    self._log(f"Xử lý thành công ảnh: {image[self.excel_cols['name']]}")
+                    save_success, save_message = self._safe_excel_save(df, excel_path)
 
-                    # Thêm delay giữa các lần upload ảnh
-                    time.sleep(2)
+                    if save_success:
+                        self._log(f"[Ảnh {idx+1}] Xử lý thành công ảnh: {image[self.excel_cols['name']]}")
+                    else:
+                        self._log(f"[Ảnh {idx+1}] Xử lý thành công ảnh nhưng không thể lưu Excel: {save_message}")
+
+                    # Hoàn thành ảnh hiện tại, chuyển sang ảnh tiếp theo luôn
+                    remaining_images = len(pending_images) - idx - 1
+                    if remaining_images > 0:
+                        self._log(f"[Ảnh {idx+1}] Hoàn thành! Còn {remaining_images} ảnh chưa xử lý. Bắt đầu ảnh tiếp theo...")
+                    else:
+                        self._log(f"[Ảnh {idx+1}] Đây là ảnh cuối cùng. Hoàn thành tất cả!")
 
                 except Exception as e:
-                    self._log(f"Lỗi khi xử lý ảnh {image[self.excel_cols['name']]}: {str(e)}")
+                    self._log(f"[Ảnh {idx+1}] Lỗi khi xử lý ảnh {image[self.excel_cols['name']]}: {str(e)}")
+                    self._log(f"[Ảnh {idx+1}] Trạng thái trang khi lỗi: {self._check_page_state()}")
+
+                    # Đánh dấu ảnh bị lỗi
+                    df.loc[df[self.excel_cols["path"]] == image[self.excel_cols["path"]], self.excel_cols["status"]] = f'Error: {str(e)[:50]}'
+                    save_success, save_message = self._safe_excel_save(df, excel_path)
+
+                    if not save_success:
+                        self._log(f"[Ảnh {idx+1}] Không thể lưu trạng thái lỗi vào Excel: {save_message}")
+
                     continue
             return True, "Đã xử lý xong tất cả ảnh"
         except Exception as e:
@@ -255,7 +576,7 @@ class SoraAutomation:
 class ChromeAutomationUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Chrome Automation Tool v4 (Simplified UI)")
+        self.root.title("Sora Automation v1 by Đạt0o ")
         self.root.geometry("800x750")
 
         self._setup_variables()
@@ -274,9 +595,10 @@ class ChromeAutomationUI:
         self.prompt_text = tk.StringVar(value=PROMPT)
 
         delays_cfg = DELAYS
-        self.delay_after_upload = tk.DoubleVar(value=float(delays_cfg.get("after_upload", 2.0)))
+        self.delay_after_upload = tk.DoubleVar(value=float(delays_cfg.get("after_upload", 10.0)))
         self.delay_after_prompt = tk.DoubleVar(value=float(delays_cfg.get("after_prompt", 1.0)))
-        self.delay_before_remix = tk.DoubleVar(value=float(delays_cfg.get("before_remix", 5.0)))
+        self.delay_before_remix = tk.DoubleVar(value=float(delays_cfg.get("before_remix", 1.0)))
+        self.delay_after_remix = tk.DoubleVar(value=float(delays_cfg.get("after_remix", 180.0)))
 
         self.excel_file = tk.StringVar()
         self.status_var = tk.StringVar(value="Sẵn sàng")
@@ -344,6 +666,9 @@ class ChromeAutomationUI:
 
         ttk.Label(frame, text="Trước khi Remix:").grid(row=1, column=0, sticky=tk.W, pady=2, padx=5)
         ttk.Entry(frame, textvariable=self.delay_before_remix, width=10).grid(row=1, column=1, sticky=tk.W, padx=5)
+
+        ttk.Label(frame, text="Sau khi Remix:").grid(row=1, column=2, sticky=tk.W, pady=2, padx=5)
+        ttk.Entry(frame, textvariable=self.delay_after_remix, width=10).grid(row=1, column=3, sticky=tk.W, padx=5)
 
     def _create_control_widgets(self, parent):
         """Khu vực các nút điều khiển chính."""
@@ -469,8 +794,10 @@ class ChromeAutomationUI:
             self.sora.delays["after_upload"] = float(self.delay_after_upload.get())
             self.sora.delays["after_prompt"] = float(self.delay_after_prompt.get())
             self.sora.delays["before_remix"] = float(self.delay_before_remix.get())
+            self.sora.delays["after_remix"] = float(self.delay_after_remix.get())
+
             self.log_message(
-                f"Đã cập nhật độ trễ: Sau Upload({self.sora.delays['after_upload']}s), Sau Prompt({self.sora.delays['after_prompt']}s), Trước Remix({self.sora.delays['before_remix']}s)")
+                f"Đã cập nhật độ trễ: Sau Upload({self.sora.delays['after_upload']}s), Sau Prompt({self.sora.delays['after_prompt']}s), Trước Remix({self.sora.delays['before_remix']}s), Sau Remix({self.sora.delays['after_remix']}s)")
         except tk.TclError:
             messagebox.showerror("Lỗi giá trị", "Vui lòng nhập giá trị số hợp lệ cho các ô độ trễ.")
             return

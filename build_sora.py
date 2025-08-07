@@ -41,7 +41,6 @@ def build_sora():
         sys.exit(1)
 
     print(f'\n📁 File .exe đã được tạo tại: {dist_dir}')
-    print(f'📋 Khi chạy, cần đặt chromedriver.exe cùng thư mục với file .exe (không cần chrome-automation)')
 
 if __name__ == '__main__':
     build_sora()
